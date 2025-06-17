@@ -1,8 +1,9 @@
 flask
-moviepy
 openai-whisper
-requests
-edge-tts
-python-dotenv
+cloudinar
 google-generativeai
-cloudinary
+edge-tts
+git+https://github.com/openai/whisper.git
+moviepy===1.0.3
+requests
+python-dotenvy
