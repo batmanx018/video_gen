@@ -1,6 +1,6 @@
 flask
 openai-whisper
-cloudinar
+cloudinary
 google-generativeai
 edge-tts
 git+https://github.com/openai/whisper.git
