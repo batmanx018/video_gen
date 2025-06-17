@@ -1,5 +1,4 @@
-fastapi
-uvicorn
+flask
 moviepy
 openai-whisper
 requests
