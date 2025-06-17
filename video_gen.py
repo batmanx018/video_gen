@@ -120,7 +120,7 @@ def combine_videos_audio_captions(video_paths, captions, audio_file=AUDIO_PATH):
         if seg["start"] < audio_duration:
             try:
                 txt = TextClip(seg["text"].strip(), fontsize=40, color="white", stroke_color="black", stroke_width=2,
-                               font="Arial", method="caption", size=(video.size[0] - 100, 120))
+                               font="DejaVu-Sans", method="caption", size=(video.size[0] - 100, 120))
                 caption_clips.append(txt.set_position(('center', video.size[1] - 160))
                                      .set_start(seg["start"]).set_duration(min(seg["end"], audio_duration) - seg["start"]))
             except Exception as e:
