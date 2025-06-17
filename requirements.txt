@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+moviepy
+openai-whisper
+requests
+edge-tts
+python-dotenv
+google-generativeai
+cloudinary
