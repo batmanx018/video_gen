@@ -22,3 +22,4 @@ async def generate_video(
         })
     else:
         return JSONResponse(status_code=500, content={"status": "error", "message": "Video generation failed."})
+ 
