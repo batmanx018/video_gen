@@ -21,4 +21,4 @@ async def generate_video(
             "keywords": keyword_list
         })
     else:
-        return JSONResponse(status_code=500, content={"status": "error", "message": "Video generation failed."}) #updated
+        return JSONResponse(status_code=500, content={"status": "error", "message": "Video generation failed."}) 
