@@ -1,27 +1,29 @@
 FROM python:3.10-slim
 
-WORKDIR /app
-
-# Install FFmpeg, ImageMagick, and dependencies for TextClip fonts
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     imagemagick \
-    libx11-dev \
-    libxext6 \
-    libsm6 \
-    libxrender-dev \
-    fonts-dejavu \
-    && apt-get clean \
+    curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Avoid security policy block in ImageMagick for text
-RUN echo "policy.xml workaround" && \
-    sed -i 's/none/read|write/' /etc/ImageMagick-6/policy.xml || true
+# Fix ImageMagick policy issue (optional)
+RUN echo "<policy domain=\"coder\" rights=\"read | write\" pattern=\"PDF\" />" >> /etc/ImageMagick-6/policy.xml
 
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Set work directory
+WORKDIR /app
+
+# Install Python dependencies
 COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
-
+# Copy your FastAPI app
 COPY . .
 
+# Default command
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
