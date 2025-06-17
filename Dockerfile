@@ -27,4 +27,4 @@ COPY . .
 ENV FLASK_APP=app.py
 
 # Start Flask app
-CMD ["python", "app.py"]
+CMD ["python", "main.py"]
