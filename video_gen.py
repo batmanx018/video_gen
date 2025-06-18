@@ -91,22 +91,22 @@ def download_video(url, filename):
         return None
 
 def combine_video_audio_captions(video_paths, captions):
-    audio = mp.AudioFileClip(AUDIO_PATH)
+    MAX_DURATION = 45  # in seconds
+    audio = mp.AudioFileClip(AUDIO_PATH).subclip(0, MAX_DURATION)
     clips, looped, txt_clips = [], [], []
 
-    audio_duration = audio.duration
     total, i = 0, 0
 
     for path in video_paths:
         try:
-            clip = mp.VideoFileClip(path).resize(height=1280).crop(x_center=720, width=720)
+            clip = mp.VideoFileClip(path).resize(height=720).crop(x_center=360, width=720)  # lower resolution
             clips.append(clip)
         except Exception as e:
             logging.warning(f"Clip load failed: {e}")
 
-    while total < audio_duration:
+    while total < MAX_DURATION:
         clip = clips[i % len(clips)]
-        dur = min(clip.duration, audio_duration - total)
+        dur = min(clip.duration, MAX_DURATION - total)
         looped.append(clip.subclip(0, dur))
         total += dur
         i += 1
@@ -114,23 +114,33 @@ def combine_video_audio_captions(video_paths, captions):
     video = mp.concatenate_videoclips(looped, method="compose").set_audio(audio)
 
     for seg in captions:
-        start, end = seg['start'], min(seg['end'], audio_duration)
+        start = seg['start']
+        end = min(seg['end'], MAX_DURATION)
+        if start >= MAX_DURATION:
+            break
         txt = mp.TextClip(
             seg['text'],
-            fontsize=40,
+            fontsize=30,
             color='white',
             stroke_color='black',
             stroke_width=2,
             font='Arial',
-            size=(video.w - 100, 120),
+            size=(video.w - 100, 100),
             method='caption'
-        ).set_position(('center', video.h - 180)).set_start(start).set_duration(end - start)
+        ).set_position(('center', video.h - 120)).set_start(start).set_duration(end - start)
         txt_clips.append(txt)
 
-    final = mp.CompositeVideoClip([video] + txt_clips).set_duration(audio_duration)
-    final.write_videofile(OUTPUT_PATH, codec="libx264", audio_codec="aac", fps=24, preset="ultrafast", bitrate="400k")
+    final = mp.CompositeVideoClip([video] + txt_clips).set_duration(MAX_DURATION)
 
-    # Cleanup clips
+    final.write_videofile(
+        OUTPUT_PATH,
+        codec="libx264",
+        audio_codec="aac",
+        fps=20,
+        preset="ultrafast",
+        bitrate="300k"  # lower bitrate
+    )
+
     for clip in clips + looped + txt_clips:
         clip.close()
     audio.close()
@@ -138,6 +148,7 @@ def combine_video_audio_captions(video_paths, captions):
     gc.collect()
 
     return OUTPUT_PATH
+
 
 def cleanup():
     for f in os.listdir(VIDEO_DIR):
