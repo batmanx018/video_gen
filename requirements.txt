@@ -6,4 +6,5 @@ edge-tts
 git+https://github.com/openai/whisper.git
 moviepy===1.0.3
 requests
+Pillow<10.0
 python-dotenv
