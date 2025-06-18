@@ -1,23 +1,33 @@
 import os
 import re
-import requests
+import gc
+import logging
 import asyncio
 import whisper
-import edge_tts
+import requests
 import tempfile
-import subprocess
+import edge_tts
+import moviepy.editor as mp
 import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
 import google.generativeai as genai
 
-# Load env variables
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
 load_dotenv()
 
+# Paths
 AUDIO_PATH = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
 VIDEO_DIR = "./videos"
 OUTPUT_PATH = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+os.makedirs(VIDEO_DIR, exist_ok=True)
 
+# API Keys
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 
@@ -27,53 +37,31 @@ cloudinary.config(
     api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
 
-os.makedirs(VIDEO_DIR, exist_ok=True)
-
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
 
-# 🗣️ Text to Speech
 async def text_to_speech(text):
-    communicate = edge_tts.Communicate(
-        text, voice="en-US-AriaNeural", rate="+0%", pitch="+0Hz"
-    )
+    communicate = edge_tts.Communicate(text, voice="en-US-AriaNeural")
     await communicate.save(AUDIO_PATH)
 
-# 🎯 Generate captions using Whisper
 def generate_captions():
     whisper_model = whisper.load_model("base")
-    result = whisper_model.transcribe(AUDIO_PATH, verbose=False, word_timestamps=True)
+    result = whisper_model.transcribe(AUDIO_PATH, word_timestamps=True, verbose=False)
     for seg in result["segments"]:
         seg["text"] = re.sub(r'[\*\[\]]+', '', seg["text"])
     return result["segments"]
 
-# 📝 Write SRT subtitle file
-def write_srt_file(captions, srt_path):
-    def format_time(seconds):
-        hrs, secs = divmod(int(seconds), 3600)
-        mins, secs = divmod(secs, 60)
-        millis = int((seconds - int(seconds)) * 1000)
-        return f"{hrs:02}:{mins:02}:{secs:02},{millis:03}"
-
-    with open(srt_path, "w", encoding="utf-8") as f:
-        for i, seg in enumerate(captions, 1):
-            start = format_time(seg["start"])
-            end = format_time(seg["end"])
-            f.write(f"{i}\n{start} --> {end}\n{seg['text']}\n\n")
-
-# 📹 Get videos from Pexels
 def fetch_video_urls(keywords, per_keyword=2):
     headers = {"Authorization": PEXELS_API_KEY}
     urls = []
     for keyword in keywords:
-        params = {
-            "query": keyword,
-            "per_page": 10,
-            "orientation": "portrait",
-            "size": "medium"
-        }
         try:
-            res = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params)
+            res = requests.get("https://api.pexels.com/videos/search", headers=headers, params={
+                "query": keyword,
+                "per_page": 10,
+                "orientation": "portrait",
+                "size": "medium"
+            })
             videos = res.json().get("videos", [])
             count = 0
             for video in videos:
@@ -86,100 +74,111 @@ def fetch_video_urls(keywords, per_keyword=2):
                         count += 1
                         break
         except Exception as e:
-            print(f"⚠️ Error fetching videos for '{keyword}': {e}")
+            logging.warning(f"Error fetching for '{keyword}': {e}")
     return urls
 
-# ⬇️ Download video
 def download_video(url, filename):
     path = os.path.join(VIDEO_DIR, filename)
     try:
-        response = requests.get(url, stream=True)
-        if response.status_code == 200:
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
             with open(path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
+                for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-            return path
+        return path
     except Exception as e:
-        print(f"⚠️ Download error: {e}")
-    return None
+        logging.warning(f"Download error: {e}")
+        return None
 
-# 🎞️ Combine videos using ffmpeg
-def combine_video_audio_captions_ffmpeg(video_paths, captions):
-    concat_list_path = os.path.join(VIDEO_DIR, "inputs.txt")
-    with open(concat_list_path, "w") as f:
-        for path in video_paths:
-            f.write(f"file '{os.path.abspath(path)}'\n")
+def combine_video_audio_captions(video_paths, captions):
+    audio = mp.AudioFileClip(AUDIO_PATH)
+    clips, looped, txt_clips = [], [], []
 
-    temp_concat = os.path.join(VIDEO_DIR, "combined.mp4")
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path,
-        "-c", "copy", temp_concat
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    audio_duration = audio.duration
+    total, i = 0, 0
 
-    with_audio = os.path.join(VIDEO_DIR, "with_audio.mp4")
-    subprocess.run([
-        "ffmpeg", "-y", "-i", temp_concat, "-i", AUDIO_PATH,
-        "-c:v", "copy", "-c:a", "aac", "-shortest", with_audio
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for path in video_paths:
+        try:
+            clip = mp.VideoFileClip(path).resize(height=1280).crop(x_center=720, width=720)
+            clips.append(clip)
+        except Exception as e:
+            logging.warning(f"Clip load failed: {e}")
 
-    srt_path = os.path.join(VIDEO_DIR, "subtitles.srt")
-    write_srt_file(captions, srt_path)
+    while total < audio_duration:
+        clip = clips[i % len(clips)]
+        dur = min(clip.duration, audio_duration - total)
+        looped.append(clip.subclip(0, dur))
+        total += dur
+        i += 1
 
-    subprocess.run([
-        "ffmpeg", "-y", "-i", with_audio, "-vf", f"subtitles={srt_path},scale=720:-2",
-        "-preset", "ultrafast", "-b:v", "400k", "-bufsize", "512k",
-        OUTPUT_PATH
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    video = mp.concatenate_videoclips(looped, method="compose").set_audio(audio)
+
+    for seg in captions:
+        start, end = seg['start'], min(seg['end'], audio_duration)
+        txt = mp.TextClip(
+            seg['text'],
+            fontsize=40,
+            color='white',
+            stroke_color='black',
+            stroke_width=2,
+            font='Arial',
+            size=(video.w - 100, 120),
+            method='caption'
+        ).set_position(('center', video.h - 180)).set_start(start).set_duration(end - start)
+        txt_clips.append(txt)
+
+    final = mp.CompositeVideoClip([video] + txt_clips).set_duration(audio_duration)
+    final.write_videofile(OUTPUT_PATH, codec="libx264", audio_codec="aac", fps=24, preset="ultrafast", bitrate="400k")
+
+    # Cleanup clips
+    for clip in clips + looped + txt_clips:
+        clip.close()
+    audio.close()
+    final.close()
+    gc.collect()
 
     return OUTPUT_PATH
 
-# 🧹 Clean up
 def cleanup():
     for f in os.listdir(VIDEO_DIR):
         os.remove(os.path.join(VIDEO_DIR, f))
-    if os.path.exists(AUDIO_PATH):
-        os.remove(AUDIO_PATH)
+    if os.path.exists(AUDIO_PATH): os.remove(AUDIO_PATH)
+    if os.path.exists(OUTPUT_PATH): os.remove(OUTPUT_PATH)
 
-# 🔁 Main function
 def generate_full_video(user_prompt, user_script, user_keywords):
     try:
-        print("📜 Prompt:", user_prompt)
-        print("📝 Script:", user_script)
-        print("🔑 Keywords:", user_keywords)
+        logging.info(f"📜 Prompt: {user_prompt}")
+        logging.info(f"📝 Script: {user_script}")
+        logging.info(f"🔑 Keywords: {user_keywords}")
 
-        print("🔊 Generating TTS...")
+        logging.info("🔊 Generating TTS...")
         asyncio.run(text_to_speech(user_script))
 
-        print("🔠 Generating captions...")
+        logging.info("🔠 Generating captions...")
         captions = generate_captions()
 
-        print("📥 Downloading stock videos...")
+        logging.info("📥 Downloading stock videos...")
         urls = fetch_video_urls(user_keywords)
-        video_paths = []
-        for i, url in enumerate(urls):
-            path = download_video(url, f"video_{i}.mp4")
-            if path:
-                video_paths.append(path)
+        video_paths = [download_video(url, f"video_{i}.mp4") for i, url in enumerate(urls)]
+        video_paths = [v for v in video_paths if v]
 
         if not video_paths:
-            raise Exception("❌ No valid video clips found.")
+            raise Exception("No valid video clips downloaded.")
 
-        print("🎞️ Combining video/audio/captions...")
-        output_path = combine_video_audio_captions_ffmpeg(video_paths, captions)
-        print("✅ Video generated locally:", output_path)
+        logging.info("🎞️ Combining video/audio/captions...")
+        output_path = combine_video_audio_captions(video_paths, captions)
+        logging.info(f"✅ Video generated locally at: {output_path}")
 
-        print("☁️ Uploading to Cloudinary...")
-        cloudinary_upload = cloudinary.uploader.upload_large(output_path, resource_type="video", folder="ai_videos")
-        cloudinary_url = cloudinary_upload.get("secure_url")
+        logging.info("☁️ Uploading to Cloudinary...")
+        cloud_url = cloudinary.uploader.upload_large(output_path, resource_type="video", folder="ai_videos").get("secure_url")
 
-        os.remove(output_path)
-
-        print("📤 Uploaded to:", cloudinary_url)
-        return cloudinary_url, captions, user_keywords
+        logging.info(f"📤 Uploaded to: {cloud_url}")
+        return cloud_url, captions, user_keywords
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        logging.error(f"❌ Error: {e}")
         return None, [], []
 
     finally:
         cleanup()
+        gc.collect()

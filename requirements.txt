@@ -7,3 +7,8 @@ git+https://github.com/openai/whisper.git
 moviepy===1.0.3
 requests
 python-dotenv
+tempfile
+requests
+gc
+os
+re
