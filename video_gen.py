@@ -131,7 +131,15 @@ def combine_video_audio_captions(video_paths, captions):
         txt_clips.append(txt)
 
     final = mp.CompositeVideoClip([video] + txt_clips).set_duration(audio_duration)
-    final.write_videofile(OUTPUT_PATH, codec="libx264", audio_codec="aac")
+    final.write_videofile(
+    OUTPUT_PATH,
+    codec="libx264",
+    audio_codec="aac",
+    bitrate="400k",  # lower bitrate
+    fps=24,
+    preset="ultrafast",
+    threads=2
+)
 
     for c in clips + looped + txt_clips:
         c.close()
