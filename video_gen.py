@@ -1,18 +1,17 @@
-# video_gen.py
-
 import os
 import re
 import requests
 import asyncio
 import whisper
 import edge_tts
-import moviepy.editor as mp
+import tempfile
+import subprocess
 import cloudinary
 import cloudinary.uploader
-import tempfile
 from dotenv import load_dotenv
 import google.generativeai as genai
 
+# Load env variables
 load_dotenv()
 
 AUDIO_PATH = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
@@ -28,20 +27,19 @@ cloudinary.config(
     api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
 
-os.makedirs("videos", exist_ok=True)
+os.makedirs(VIDEO_DIR, exist_ok=True)
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
 
+# 🗣️ Text to Speech
 async def text_to_speech(text):
     communicate = edge_tts.Communicate(
-        text,
-        voice="en-US-AriaNeural",
-        rate="+0%",
-        pitch="+0Hz"
+        text, voice="en-US-AriaNeural", rate="+0%", pitch="+0Hz"
     )
     await communicate.save(AUDIO_PATH)
 
+# 🎯 Generate captions using Whisper
 def generate_captions():
     whisper_model = whisper.load_model("base")
     result = whisper_model.transcribe(AUDIO_PATH, verbose=False, word_timestamps=True)
@@ -49,6 +47,21 @@ def generate_captions():
         seg["text"] = re.sub(r'[\*\[\]]+', '', seg["text"])
     return result["segments"]
 
+# 📝 Write SRT subtitle file
+def write_srt_file(captions, srt_path):
+    def format_time(seconds):
+        hrs, secs = divmod(int(seconds), 3600)
+        mins, secs = divmod(secs, 60)
+        millis = int((seconds - int(seconds)) * 1000)
+        return f"{hrs:02}:{mins:02}:{secs:02},{millis:03}"
+
+    with open(srt_path, "w", encoding="utf-8") as f:
+        for i, seg in enumerate(captions, 1):
+            start = format_time(seg["start"])
+            end = format_time(seg["end"])
+            f.write(f"{i}\n{start} --> {end}\n{seg['text']}\n\n")
+
+# 📹 Get videos from Pexels
 def fetch_video_urls(keywords, per_keyword=2):
     headers = {"Authorization": PEXELS_API_KEY}
     urls = []
@@ -76,6 +89,7 @@ def fetch_video_urls(keywords, per_keyword=2):
             print(f"⚠️ Error fetching videos for '{keyword}': {e}")
     return urls
 
+# ⬇️ Download video
 def download_video(url, filename):
     path = os.path.join(VIDEO_DIR, filename)
     try:
@@ -89,71 +103,44 @@ def download_video(url, filename):
         print(f"⚠️ Download error: {e}")
     return None
 
-def combine_video_audio_captions(video_paths, captions):
-    audio = mp.AudioFileClip(AUDIO_PATH)
-    audio_duration = audio.duration
-    clips = []
-    for path in video_paths:
-        try:
-            clip = mp.VideoFileClip(path).resize(height=1280).crop(x_center=720, width=720)
-            if clip.duration >= 1:
-                clips.append(clip)
-        except Exception as e:
-            print(f"⚠️ Video load error: {e}")
+# 🎞️ Combine videos using ffmpeg
+def combine_video_audio_captions_ffmpeg(video_paths, captions):
+    concat_list_path = os.path.join(VIDEO_DIR, "inputs.txt")
+    with open(concat_list_path, "w") as f:
+        for path in video_paths:
+            f.write(f"file '{os.path.abspath(path)}'\n")
 
-    looped = []
-    total = 0
-    i = 0
-    while total < audio_duration:
-        clip = clips[i % len(clips)]
-        duration = min(clip.duration, audio_duration - total)
-        looped.append(clip.subclip(0, duration))
-        total += duration
-        i += 1
+    temp_concat = os.path.join(VIDEO_DIR, "combined.mp4")
+    subprocess.run([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path,
+        "-c", "copy", temp_concat
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    video = mp.concatenate_videoclips(looped).set_audio(audio)
+    with_audio = os.path.join(VIDEO_DIR, "with_audio.mp4")
+    subprocess.run([
+        "ffmpeg", "-y", "-i", temp_concat, "-i", AUDIO_PATH,
+        "-c:v", "copy", "-c:a", "aac", "-shortest", with_audio
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    txt_clips = []
-    for seg in captions:
-        start = seg['start']
-        end = min(seg['end'], audio_duration)
-        text = seg['text']
-        txt = mp.TextClip(
-            text,
-            fontsize=48,
-            color='white',
-            stroke_color='black',
-            stroke_width=2,
-            method='caption',
-            font='Arial',
-            size=(video.w - 100, 160)
-        ).set_position(('center', video.h - 200)).set_start(start).set_duration(end - start)
-        txt_clips.append(txt)
+    srt_path = os.path.join(VIDEO_DIR, "subtitles.srt")
+    write_srt_file(captions, srt_path)
 
-    final = mp.CompositeVideoClip([video] + txt_clips).set_duration(audio_duration)
-    final.write_videofile(
-    OUTPUT_PATH,
-    codec="libx264",
-    audio_codec="aac",
-    bitrate="400k",  # lower bitrate
-    fps=24,
-    preset="ultrafast",
-    threads=2
-)
-
-    for c in clips + looped + txt_clips:
-        c.close()
-    audio.close()
-    final.close()
+    subprocess.run([
+        "ffmpeg", "-y", "-i", with_audio, "-vf", f"subtitles={srt_path},scale=720:-2",
+        "-preset", "ultrafast", "-b:v", "400k", "-bufsize", "512k",
+        OUTPUT_PATH
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     return OUTPUT_PATH
 
+# 🧹 Clean up
 def cleanup():
-    for f in os.listdir("videos"):
-        os.remove(os.path.join("videos", f))
+    for f in os.listdir(VIDEO_DIR):
+        os.remove(os.path.join(VIDEO_DIR, f))
     if os.path.exists(AUDIO_PATH):
         os.remove(AUDIO_PATH)
 
+# 🔁 Main function
 def generate_full_video(user_prompt, user_script, user_keywords):
     try:
         print("📜 Prompt:", user_prompt)
@@ -178,7 +165,7 @@ def generate_full_video(user_prompt, user_script, user_keywords):
             raise Exception("❌ No valid video clips found.")
 
         print("🎞️ Combining video/audio/captions...")
-        output_path = combine_video_audio_captions(video_paths, captions)
+        output_path = combine_video_audio_captions_ffmpeg(video_paths, captions)
         print("✅ Video generated locally:", output_path)
 
         print("☁️ Uploading to Cloudinary...")
