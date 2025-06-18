@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from video_gen import generate_full_video
-
+import os
 app = Flask(__name__)
 
 @app.route("/ping", methods=["GET"])
@@ -29,4 +29,5 @@ def generate_video():
         return jsonify({"status": "error", "message": "Video generation failed"}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    port = int(os.environ.get("PORT", 5000))  # Render sets PORT env variable
+    app.run(host="0.0.0.0", port=port)

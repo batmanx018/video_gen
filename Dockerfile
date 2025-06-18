@@ -25,6 +25,7 @@ COPY . .
 
 # Set environment variable for Flask
 ENV FLASK_APP=app.py
+EXPOSE 5000
 
 # Start Flask app
 CMD ["python", "main.py"]
